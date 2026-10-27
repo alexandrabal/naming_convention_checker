@@ -41,9 +41,9 @@ PAID_CHANNELS = ["paid-search", "paid-social", "paid-display", "paid-video", "pa
 PAID_PLATFORMS = ["bing", "cgpt", "eads", "goog", "lkdn", "meta", "qura",
                   "redt", "tktk", "twtr", "ytub"]
 
-# ASSUMED: the dictionary has no list for the tracker's "Funnel stage" column.
-# TOFU is in your example; MOFU and BOFU are assumed. Edit if different.
-FUNNEL_STAGES = ["tofu", "mofu", "bofu"]
+# # ASSUMED: the dictionary has no list for the tracker's "Funnel stage" column.
+# # TOFU is in your example; MOFU and BOFU are assumed. Edit if different.
+# FUNNEL_STAGES = ["tofu", "mofu", "bofu"]
 
 # Tracker "Tactic" = dictionary "Funnel stage" column (Awareness (AWN) etc.)
 TACTICS = ["awn", "cdn", "cvr", "rtn"]
@@ -108,7 +108,7 @@ CONVENTION = [
     {"name": "goal",          "label": "Goal",          "allowed": PAID_GOALS,     "required": True},
     {"name": "channel",       "label": "Channel",       "allowed": PAID_CHANNELS,  "required": True},
     {"name": "platform",      "label": "Platform",      "allowed": PAID_PLATFORMS, "required": True},
-    {"name": "funnel_stage",  "label": "Funnel stage",  "allowed": FUNNEL_STAGES,  "required": False},
+    # {"name": "funnel_stage",  "label": "Funnel stage",  "allowed": FUNNEL_STAGES,  "required": False},
     {"name": "tactic",        "label": "Tactic",        "allowed": TACTICS,        "required": False},
     {"name": "audience",      "label": "Audience",      "allowed": AUDIENCES,      "required": False},
     {"name": "duration",      "label": "Duration",      "allowed": DURATIONS,      "required": False},
