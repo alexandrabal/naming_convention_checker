@@ -1,0 +1,313 @@
+# =============================================================================
+# FY27 CAMPAIGN NAME CHECKER  (Count Python cell)
+# -----------------------------------------------------------------------------
+# 1. Set the two column names below.
+# 2. If your source cell isn't called "campaigns", change it in the RUN
+#    section at the bottom (written out directly so Count links the cells).
+# 3. Run the cell. The output table is the check result for every campaign.
+# =============================================================================
+
+NAME_COL     = "CAMPAIGN"   # column with the campaign name
+PLATFORM_COL = "CHANNEL"    # column with the ad platform, or None if you don't have one
+
+import argparse
+import csv
+import os
+import re
+import sys
+
+# =============================================================================
+# ALLOWED VALUES  (from the FY27 data dictionary)
+# =============================================================================
+
+PROGRAM_BRANDS = ["tag", "avst", "klt", "sr", "vsh", "upsc", "slb", "bdl"]
+
+PROGRAMS = ["brd", "do", "wm", "cl", "itm", "pp", "pr", "cm", "teu", "tna",
+            "plt", "ev", "ite", "cp", "agl", "crpr"]
+
+OUTCOMES = ["bdm", "caq", "cre", "cex", "me", "mo"]
+
+INITIATIVE_TYPES = ["bau", "inc", "cpg", "int", "tst", "evp", "evd"]
+
+PRODUCTS = ["src", "es4j", "sr4bb", "sr4c", "sr4cc", "sr4cdc", "sr4j", "sr4jc",
+            "sr4jdc", "sr4jic", "srleap", "srms", "klt-b4c", "klt-sing",
+            "klt-comf", "klt-f4c", "klt-f4dc", "klt-m4c", "klt-m4dc", "klt-tbc",
+            "ups-e4j", "ups-h4j", "ups-tbc", "ups-tfo", "tag-kc4j"]
+
+PAID_GOALS = ["mp1", "mp2", "ctc", "lgn", "web", "baw", "eng", "vid", "reg", "cnv"]
+
+PAID_CHANNELS = ["paid-search", "paid-social", "paid-display", "paid-video", "paid-other"]
+
+PAID_PLATFORMS = ["bing", "cgpt", "eads", "goog", "lkdn", "meta", "qura",
+                  "redt", "tktk", "twtr", "ytub"]
+
+# ASSUMED: the dictionary has no list for the tracker's "Funnel stage" column.
+# TOFU is in your example; MOFU and BOFU are assumed. Edit if different.
+FUNNEL_STAGES = ["tofu", "mofu", "bofu"]
+
+# Tracker "Tactic" = dictionary "Funnel stage" column (Awareness (AWN) etc.)
+TACTICS = ["awn", "cdn", "cvr", "rtn"]
+
+AUDIENCES = ["prs", "rmk", "rct", "crm", "abm"]
+
+DURATIONS = ["aho", "evg"]
+
+# ASSUMED: the dictionary has no region list. EMEA and NA are in your
+# examples; the rest are guesses. Edit to match the tracker dropdown.
+REGIONS = ["emea", "na", "apac", "latam", "global"]
+
+LANGUAGES = ["en", "de", "es", "frca", "hr", "it", "tr"]
+
+CAMPAIGN_TYPES = ["brd", "nbd", "dsa", "div", "dis", "pla", "pmax", "ytb", "bst",
+                  "sta", "vid", "crs", "das", "tal", "cst", "msg", "mix", "art"]
+
+COUNTRIES = ["all"] + """
+ad ae al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bl bm bn bo br
+bs bt bv bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj
+dk dm do dz ec ee eg eh er es et fi fj fk fm fo fr ga gb gd ge gf gg gh gi gl gm
+gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm
+jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md
+me mf mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl
+no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro rs ru rw sa
+sb sc sd se sg sh si sk sl sm sn so sr ss st sv sx sy sz tc td tf tg th tj tk tl
+tm tn to tr tt tv tw tz ua ug um us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw
+""".split()
+
+# Initiative register ("All initiative codes"). A name whose initiative code
+# isn't here gets flagged. Add new initiatives as they're created, or pass a
+# fresh list to validate_dataframe(..., known_initiatives=[...]).
+KNOWN_INITIATIVES = [
+    "sr_pr_caq_27-tst-t01-src", "tag_tna_mo_27-evp-t02", "tag_ite_me_27-int-t03",
+    "sr_pr_cre_27-inc-t04-sr4bb", "tag_brd_bdm_27-evp-t05", "avst_crpr_cex_27-evp-t06",
+    "sr_pr_cre_27-inc-t07-es4j", "sr_pr_cre_27-inc-t08", "avst_crpr_cex_27-evp-t09",
+    "avst_itm_caq_27-cpg-a01", "avst_brd_bdm_27-cpg-a02", "avst_wm_cex_27-evp-a03",
+    "avst_crpr_caq_27-evp-a04", "avst_itm_cex_27-evp-a05", "avst_do_caq_27-evp-a06",
+    "avst_wm_caq_27-evp-a07", "avst_crpr_cex_27-evp-a08",
+    "tag_cp_cex_27-bau", "tag_brd_bdm_27-bau", "sr_brd_bdm_27-bau", "klt_brd_bdm_27-bau",
+    "sr_pr_cre_27-bau", "sr_pr_cre_27-bau-src", "sr_pr_cre_27-bau-sr4cc",
+    "sr_pr_caq_27-bau-srms",
+]
+
+# Initiative id: 27-<type>[-t01|-a01][-<product>]   e.g. 27-tst-t01-src, 27-bau, 27-inc-t08
+INITIATIVE_ID_PATTERN = (
+    r"^27-(" + "|".join(INITIATIVE_TYPES) + r")"
+    r"(-[ta]\d{2})?"
+    r"(-(" + "|".join(re.escape(p) for p in PRODUCTS) + r"))?$"
+)
+
+# =============================================================================
+# CONVENTION  (field order = order in the name)
+# =============================================================================
+
+CONVENTION = [
+    {"name": "program_brand", "label": "Program brand", "allowed": PROGRAM_BRANDS, "required": True},
+    {"name": "program",       "label": "Program",       "allowed": PROGRAMS,       "required": True},
+    {"name": "outcome",       "label": "Outcome",       "allowed": OUTCOMES,       "required": True},
+    {"name": "initiative_id", "label": "Initiative id (27-type-id-product)",
+                              "pattern": INITIATIVE_ID_PATTERN,                    "required": True},
+    {"name": "goal",          "label": "Goal",          "allowed": PAID_GOALS,     "required": True},
+    {"name": "channel",       "label": "Channel",       "allowed": PAID_CHANNELS,  "required": True},
+    {"name": "platform",      "label": "Platform",      "allowed": PAID_PLATFORMS, "required": True},
+    {"name": "funnel_stage",  "label": "Funnel stage",  "allowed": FUNNEL_STAGES,  "required": False},
+    {"name": "tactic",        "label": "Tactic",        "allowed": TACTICS,        "required": False},
+    {"name": "audience",      "label": "Audience",      "allowed": AUDIENCES,      "required": False},
+    {"name": "duration",      "label": "Duration",      "allowed": DURATIONS,      "required": False},
+    {"name": "region",        "label": "Region",        "allowed": REGIONS,        "required": False},
+    {"name": "country",       "label": "Country",       "allowed": COUNTRIES,      "required": False},
+    {"name": "language",      "label": "Language",      "allowed": LANGUAGES,      "required": False},
+    {"name": "campaign_type", "label": "Campaign type", "allowed": CAMPAIGN_TYPES, "required": False},
+]
+
+# Which platform codes are valid for campaigns pulled from each ad platform.
+SOURCE_PLATFORM_CODES = {
+    "google": {"goog", "ytub"}, "google ads": {"goog", "ytub"}, "youtube": {"ytub", "goog"},
+    "meta": {"meta"}, "facebook": {"meta"}, "linkedin": {"lkdn"}, "reddit": {"redt"},
+    "bing": {"bing"}, "microsoft ads": {"bing"}, "tiktok": {"tktk"},
+    "twitter": {"twtr"}, "x": {"twtr"}, "quora": {"qura"},
+}
+
+# Platform → channel pairs that don't make sense (extra sanity check).
+PLATFORM_CHANNELS = {
+    "goog": {"paid-search", "paid-display", "paid-video", "paid-other"},
+    "bing": {"paid-search", "paid-display", "paid-other"},
+    "ytub": {"paid-video", "paid-other"},
+    "meta": {"paid-social", "paid-video", "paid-other"},
+    "lkdn": {"paid-social", "paid-video", "paid-other"},
+    "redt": {"paid-social", "paid-video", "paid-other"},
+    "tktk": {"paid-social", "paid-video", "paid-other"},
+    "twtr": {"paid-social", "paid-video", "paid-other"},
+    "qura": {"paid-social", "paid-other"},
+}
+
+DELIMITER = "_"
+MAX_LENGTH = 255
+
+# =============================================================================
+# VALIDATION
+# =============================================================================
+
+def _value_ok(field, value):
+    if "allowed" in field:
+        return value in field["_allowed_set"]
+    return re.match(field["pattern"], value) is not None
+
+
+for _f in CONVENTION:
+    if "allowed" in _f:
+        _f["_allowed_set"] = set(_f["allowed"])
+
+
+def _bad_value_msg(field, value):
+    if "allowed" in field:
+        opts = field["allowed"]
+        hint = ", ".join(opts) if len(opts) <= 12 else "see data dictionary"
+        return f"{field['label']}: '{value}' isn't an allowed code ({hint})"
+    return f"{field['label']}: '{value}' isn't a valid initiative id (e.g. 27-tst-t01-src, 27-bau)"
+
+
+def _align(segments):
+    """
+    Match segments to fields allowing optional fields to be left out.
+    Edit-distance style: picks the reading of the name with the fewest problems,
+    so a missing field is reported as missing rather than shifting every later
+    field into the wrong slot.
+    """
+    n, m = len(CONVENTION), len(segments)
+    INF = float("inf")
+    cost = [[INF] * (m + 1) for _ in range(n + 1)]
+    back = [[None] * (m + 1) for _ in range(n + 1)]
+    cost[0][0] = 0
+    for i in range(n + 1):
+        for j in range(m + 1):
+            c = cost[i][j]
+            if c == INF:
+                continue
+            if i < n and j < m:                          # field i uses segment j
+                f, v = CONVENTION[i], segments[j]
+                step = 0 if (v == "" and not f["required"]) or (v and _value_ok(f, v)) else 1
+                if c + step < cost[i + 1][j + 1]:
+                    cost[i + 1][j + 1], back[i + 1][j + 1] = c + step, ("use", i, j)
+            if i < n:                                    # field i left out
+                step = 1 if CONVENTION[i]["required"] else 0
+                if c + step < cost[i + 1][j]:
+                    cost[i + 1][j], back[i + 1][j] = c + step, ("skip", i, None)
+            if j < m:                                    # segment j doesn't belong
+                if c + 1 < cost[i][j + 1]:
+                    cost[i][j + 1], back[i][j + 1] = c + 1, ("extra", None, j)
+
+    steps, i, j = [], n, m
+    while (i, j) != (0, 0):
+        kind, fi, sj = back[i][j]
+        steps.append((kind, fi, sj))
+        if kind == "use":
+            i, j = i - 1, j - 1
+        elif kind == "skip":
+            i -= 1
+        else:
+            j -= 1
+    return list(reversed(steps))
+
+
+def validate_name(name, source_platform=None, known_initiatives=KNOWN_INITIATIVES):
+    """
+    Returns dict: is_compliant (bool), issues (list[str]), parsed ({field: value}).
+    """
+    if name is None or (isinstance(name, float) and name != name):  # None / NaN
+        name = ""
+    raw = str(name)
+    name = raw.strip()
+    issues, parsed = [], {}
+
+    if not name:
+        return {"is_compliant": False, "issues": ["Campaign name is empty"], "parsed": {}}
+
+    if raw != name:
+        issues.append("Has leading/trailing spaces")
+    if name != name.lower():
+        issues.append("Must be all lowercase")
+    if " " in name:
+        issues.append("Contains spaces (use - inside a value, _ between fields)")
+    if len(name) > MAX_LENGTH:
+        issues.append(f"Too long ({len(name)} characters, max {MAX_LENGTH})")
+    bad_chars = sorted(set(re.sub(r"[a-z0-9_\-]", "", name.lower().replace(" ", ""))))
+    if bad_chars:
+        issues.append(f"Contains characters not allowed: {' '.join(bad_chars)}")
+
+    segments = name.lower().split(DELIMITER)
+
+    # Free text or a completely different structure: one clear message.
+    if len(segments) < 4:
+        issues.append("Doesn't follow the FY27 structure "
+                      "(brand_program_outcome_27-type-id_goal_channel_platform_...)")
+        return {"is_compliant": False, "issues": issues, "parsed": {}}
+
+    for kind, fi, sj in _align(segments):
+        if kind == "use":
+            f, v = CONVENTION[fi], segments[sj]
+            if v == "":
+                if f["required"]:
+                    issues.append(f"Missing {f['label']} (required)")
+                continue
+            parsed[f["name"]] = v
+            if not _value_ok(f, v):
+                issues.append(_bad_value_msg(f, v))
+        elif kind == "skip" and CONVENTION[fi]["required"]:
+            issues.append(f"Missing {CONVENTION[fi]['label']} (required)")
+        elif kind == "extra":
+            issues.append(f"Unexpected segment '{segments[sj]}'")
+
+    # Initiative code must exist in the register.
+    parts = [parsed.get(k) for k in ("program_brand", "program", "outcome", "initiative_id")]
+    if known_initiatives is not None and all(parts):
+        code = DELIMITER.join(parts)
+        if code not in {k.lower() for k in known_initiatives}:
+            issues.append(f"Initiative code '{code.upper()}' isn't in the initiative register")
+
+    # Platform code vs where the campaign actually runs.
+    plat = parsed.get("platform")
+    if source_platform and plat:
+        expected = SOURCE_PLATFORM_CODES.get(str(source_platform).strip().lower())
+        if expected and plat not in expected:
+            issues.append(f"Platform code '{plat}' but campaign runs on {source_platform} "
+                          f"(expected {'/'.join(sorted(expected))})")
+
+    # Channel makes sense for platform.
+    chan = parsed.get("channel")
+    if plat and chan and plat in PLATFORM_CHANNELS and chan not in PLATFORM_CHANNELS[plat]:
+        issues.append(f"Channel '{chan}' doesn't fit platform '{plat}'")
+
+    return {"is_compliant": not issues, "issues": issues, "parsed": parsed}
+
+
+def validate_dataframe(df, name_col="campaign_name", platform_col=None,
+                       known_initiatives=KNOWN_INITIATIVES):
+    """For Count / pandas: returns a copy of df with the check results added."""
+    out = df.copy()
+    names = out[name_col].tolist()
+    plats = out[platform_col].tolist() if platform_col else [None] * len(out)
+    results = [validate_name(n, p, known_initiatives) for n, p in zip(names, plats)]
+    out["is_compliant"] = [r["is_compliant"] for r in results]
+    out["issue_count"] = [len(r["issues"]) for r in results]
+    out["issues"] = ["; ".join(r["issues"]) for r in results]
+    for f in CONVENTION:
+        out[f"field_{f['name']}"] = [r["parsed"].get(f["name"]) for r in results]
+    return out
+
+
+
+# =============================================================================
+# RUN  (the last line is the cell's output table)
+# =============================================================================
+
+_df = cells.campaigns.copy()   # <- your SQL cell's name goes here
+# Accept the column names in any case (CAMPAIGN / campaign)
+_cols = {c.lower(): c for c in _df.columns}
+NAME_COL = _cols.get(NAME_COL.lower(), NAME_COL)
+if PLATFORM_COL:
+    PLATFORM_COL = _cols.get(PLATFORM_COL.lower(), PLATFORM_COL)
+_df[NAME_COL] = _df[NAME_COL].astype("object")
+if PLATFORM_COL:
+    _df[PLATFORM_COL] = _df[PLATFORM_COL].astype("object")
+
+results = validate_dataframe(_df, name_col=NAME_COL, platform_col=PLATFORM_COL)
+results
