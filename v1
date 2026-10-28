@@ -7,8 +7,12 @@
 # 3. Run the cell. The output table is the check result for every campaign.
 # =============================================================================
 
-NAME_COL     = "CAMPAIGN"   # column with the campaign name
-PLATFORM_COL = "CHANNEL"    # column with the ad platform, or None if you don't have one
+# Tracker column headers. Matching ignores case, spaces, * and punctuation,
+# so "Platform*", "PLATFORM" and "platform" all work.
+# Each setting is a list: the first header found in your data is used.
+NAME_COL     = ["Platform campaign name / Activity code or GA4 session campaign name",
+                "CAMPAIGN"]
+PLATFORM_COL = ["Platform*", "CHANNEL"]   # the ad platform (Reddit, LinkedIn...), or None
 
 import argparse
 import csv
@@ -20,12 +24,51 @@ import sys
 # ALLOWED VALUES  (from the FY27 data dictionary)
 # =============================================================================
 
-PROGRAM_BRANDS = ["tag", "avst", "klt", "sr", "vsh", "upsc", "slb", "bdl"]
-
-PROGRAMS = ["brd", "do", "wm", "cl", "itm", "pp", "pr", "cm", "teu", "tna",
-            "plt", "ev", "ite", "cp", "agl", "crpr"]
-
-OUTCOMES = ["bdm", "caq", "cre", "cex", "me", "mo"]
+# Program = the full code, checked as ONE value (not split into brand/outcome).
+# In a campaign name it's written lowercase, e.g. avst_itm_cex_27-evp-a05_...
+PROGRAMS = [
+    "AVST_BRD_BDM_27",
+    "AVST_DO_CAQ_27",
+    "AVST_DO_CEX_27",
+    "AVST_CL_CAQ_27",
+    "AVST_CL_CEX_27",
+    "AVST_WM_CAQ_27",
+    "AVST_WM_CEX_27",
+    "AVST_ITM_CAQ_27",
+    "AVST_ITM_CEX_27",
+    "AVST_AGL_CAQ_27",
+    "AVST_CRPR_CAQ_27",
+    "AVST_CRPR_CEX_27",
+    "AVST_CRPR_BDM_27",
+    "AVST_AGL_CEX_27",
+    "SR_CM_CRE_27",
+    "SR_PR_CRE_27",
+    "SR_PR_CAQ_27",
+    "SR_BRD_BDM_27",
+    "KLT_BRD_BDM_27",
+    "KLT_PR_CAQ_27",
+    "KLT_PR_CRE_27",
+    "VSH_BRD_BDM_27",
+    "VSH_BRD_CAQ_27",
+    "BDL_BRD_BDM_27",
+    "BDL_ITE_ME_27",
+    "BDL_PR_CAQ_27",
+    "TAG_TNA_MO_27",
+    "TAG_TEU_MO_27",
+    "TAG_ITE_ME_27",
+    "TAG_PLT_ME_27",
+    "TAG_BRD_ME_27",
+    "TAG_BRD_CAQ_27",
+    "TAG_BRD_BDM_27",
+    "TAG_BRD_CRE_27",
+    "TAG_CP_ME_27",
+    "TAG_CP_BDM_27",
+    "TAG_CP_CEX_27",
+    "SLB_PR_CAQ_27",
+    "SLB_BRD_BDM_27",
+    "TAG_CP_MO_27",
+    "TAG_PR_ME_27",
+]
 
 INITIATIVE_TYPES = ["bau", "inc", "cpg", "int", "tst", "evp", "evd"]
 
@@ -38,12 +81,12 @@ PAID_GOALS = ["mp1", "mp2", "ctc", "lgn", "web", "baw", "eng", "vid", "reg", "cn
 
 PAID_CHANNELS = ["paid-search", "paid-social", "paid-display", "paid-video", "paid-other"]
 
-PAID_PLATFORMS = ["bing", "cgpt", "eads", "goog", "lkdn", "meta", "qura",
+PAID_PLATFORMS = ["bing", "goog", "lkdn", "meta", "qura",
                   "redt", "tktk", "twtr", "ytub"]
 
-# # ASSUMED: the dictionary has no list for the tracker's "Funnel stage" column.
-# # TOFU is in your example; MOFU and BOFU are assumed. Edit if different.
-# FUNNEL_STAGES = ["tofu", "mofu", "bofu"]
+# ASSUMED: the dictionary has no list for the tracker's "Funnel stage" column.
+# TOFU is in the tracker; MOFU and BOFU are assumed. Edit if different.
+FUNNEL_STAGES = ["tofu", "mofu", "bofu"]
 
 # Tracker "Tactic" = dictionary "Funnel stage" column (Awareness (AWN) etc.)
 TACTICS = ["awn", "cdn", "cvr", "rtn"]
@@ -73,22 +116,47 @@ sb sc sd se sg sh si sk sl sm sn so sr ss st sv sx sy sz tc td tf tg th tj tk tl
 tm tn to tr tt tv tw tz ua ug um us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw
 """.split()
 
-# Initiative register ("All initiative codes"). A name whose initiative code
-# isn't here gets flagged. Add new initiatives as they're created, or pass a
-# fresh list to validate_dataframe(..., known_initiatives=[...]).
+# Initiative register ("All initiative codes"), pasted straight from the tracker.
+# Anything after " / " (the description) is ignored, and case doesn't matter.
+# Full codes (SR_PR_CAQ_27-TST-T01-SRC) tie an initiative to its program.
+# Suffix-only entries (-TST-T01-SRC) also work but match under ANY program.
+# Every line needs a comma at the end.
 KNOWN_INITIATIVES = [
-    "sr_pr_caq_27-tst-t01-src", "tag_tna_mo_27-evp-t02", "tag_ite_me_27-int-t03",
-    "sr_pr_cre_27-inc-t04-sr4bb", "tag_brd_bdm_27-evp-t05", "avst_crpr_cex_27-evp-t06",
-    "sr_pr_cre_27-inc-t07-es4j", "sr_pr_cre_27-inc-t08", "avst_crpr_cex_27-evp-t09",
-    "avst_itm_caq_27-cpg-a01", "avst_brd_bdm_27-cpg-a02", "avst_wm_cex_27-evp-a03",
-    "avst_crpr_caq_27-evp-a04", "avst_itm_cex_27-evp-a05", "avst_do_caq_27-evp-a06",
-    "avst_wm_caq_27-evp-a07", "avst_crpr_cex_27-evp-a08",
-    "tag_cp_cex_27-bau", "tag_brd_bdm_27-bau", "sr_brd_bdm_27-bau", "klt_brd_bdm_27-bau",
-    "sr_pr_cre_27-bau", "sr_pr_cre_27-bau-src", "sr_pr_cre_27-bau-sr4cc",
-    "sr_pr_caq_27-bau-srms",
+    "SR_PR_CAQ_27-TST-T01-SRC / Reddit awareness/lead gen",
+    "TAG_TNA_MO_27-EVP-T02 / Team '27 San Francisco",
+    "TAG_ITE_ME_27-INT-T03 / Attest renewal",
+    "SR_PR_CRE_27-INC-T04-SR4BB / October vulnerability",
+    "TAG_BRD_BDM_27-EVP-T05 / OxGen AI Summit",
+    "AVST_ITM_CAQ_27-CPG-A01 / SDI Solus emails",
+    "AVST_CRPR_CEX_27-EVP-T06 / Atlassian partner showcase",
+    "TAG_CP_CEX_27-BAU / Regular baseline activity",
+    "SR_PR_CRE_27-BAU / Regular baseline activity",
+    "SR_PR_CRE_27-BAU-SRC / Regular baseline activity",
+    "SR_PR_CRE_27-BAU-SR4CC / Regular baseline activity",
+    "AVST_BRD_BDM_27-CPG-A02 / AI on DevEx report",
+    "AVST_WM_CEX_27-EVP-A03 / Monday Evolve Madrid",
+    "AVST_CRPR_CAQ_27-EVP-A04 / Tech Show Madrid",
+    "AVST_ITM_CEX_27-EVP-A05 / ATLS JSM Migration",
+    "AVST_DO_CAQ_27-EVP-A06 / GitLab Boston L&L",
+    "AVST_WM_CAQ_27-EVP-A07 / Monday Elevate NYC",
+    "AVST_CRPR_CEX_27-EVP-A08 / Beyond T26 EU",
+    "SR_PR_CRE_27-INC-T07-ES4J / Filter bug",
+    "SR_PR_CRE_27-INC-T08 / Cloud forge migration bugs",
+    "TAG_BRD_BDM_27-BAU / Regular baseline activity",
+    "AVST_CRPR_CEX_27-EVP-T09 / ATLS Team Tour CA",
+    "SR_BRD_BDM_27-BAU / Regular baseline activity",
+    "KLT_BRD_BDM_27-BAU / Regular baseline activity",
+    "SR_PR_CAQ_27-BAU-SRMS / Regular baseline activity",
 ]
 
+
+def _init_key(entry):
+    """'SR_PR_CAQ_27-TST-T01-SRC / Reddit ...' -> 'sr_pr_caq_27-tst-t01-src'"""
+    return str(entry).split(" / ", 1)[0].strip().lower()
+
+
 # Initiative id: 27-<type>[-t01|-a01][-<product>]   e.g. 27-tst-t01-src, 27-bau, 27-inc-t08
+# (the "27" is shared with the end of the program code: avst_itm_cex_27-evp-a05)
 INITIATIVE_ID_PATTERN = (
     r"^27-(" + "|".join(INITIATIVE_TYPES) + r")"
     r"(-[ta]\d{2})?"
@@ -100,15 +168,13 @@ INITIATIVE_ID_PATTERN = (
 # =============================================================================
 
 CONVENTION = [
-    {"name": "program_brand", "label": "Program brand", "allowed": PROGRAM_BRANDS, "required": True},
     {"name": "program",       "label": "Program",       "allowed": PROGRAMS,       "required": True},
-    {"name": "outcome",       "label": "Outcome",       "allowed": OUTCOMES,       "required": True},
-    {"name": "initiative_id", "label": "Initiative id (27-type-id-product)",
+    {"name": "initiative_id", "label": "Initiative id",
                               "pattern": INITIATIVE_ID_PATTERN,                    "required": True},
     {"name": "goal",          "label": "Goal",          "allowed": PAID_GOALS,     "required": True},
     {"name": "channel",       "label": "Channel",       "allowed": PAID_CHANNELS,  "required": True},
     {"name": "platform",      "label": "Platform",      "allowed": PAID_PLATFORMS, "required": True},
-    # {"name": "funnel_stage",  "label": "Funnel stage",  "allowed": FUNNEL_STAGES,  "required": False},
+    {"name": "funnel_stage",  "label": "Funnel stage",  "allowed": FUNNEL_STAGES,  "required": False},
     {"name": "tactic",        "label": "Tactic",        "allowed": TACTICS,        "required": False},
     {"name": "audience",      "label": "Audience",      "allowed": AUDIENCES,      "required": False},
     {"name": "duration",      "label": "Duration",      "allowed": DURATIONS,      "required": False},
@@ -117,6 +183,7 @@ CONVENTION = [
     {"name": "language",      "label": "Language",      "allowed": LANGUAGES,      "required": False},
     {"name": "campaign_type", "label": "Campaign type", "allowed": CAMPAIGN_TYPES, "required": False},
 ]
+FIELDS = {f["name"]: f for f in CONVENTION}
 
 # Which platform codes are valid for campaigns pulled from each ad platform.
 SOURCE_PLATFORM_CODES = {
@@ -142,6 +209,9 @@ PLATFORM_CHANNELS = {
 DELIMITER = "_"
 MAX_LENGTH = 255
 
+# Finds the end of the program code: the first "_27" followed by - or _ or end.
+PROGRAM_END = re.compile(r"_27(?=[-_]|$)")
+
 # =============================================================================
 # VALIDATION
 # =============================================================================
@@ -154,15 +224,17 @@ def _value_ok(field, value):
 
 for _f in CONVENTION:
     if "allowed" in _f:
-        _f["_allowed_set"] = set(_f["allowed"])
+        _f["_allowed_set"] = {str(v).lower() for v in _f["allowed"]}
 
 
 def _bad_value_msg(field, value):
-    if "allowed" in field:
-        opts = field["allowed"]
-        hint = ", ".join(opts) if len(opts) <= 12 else "see data dictionary"
-        return f"{field['label']}: '{value}' isn't an allowed code ({hint})"
-    return f"{field['label']}: '{value}' isn't a valid initiative id (e.g. 27-tst-t01-src, 27-bau)"
+    return f"Wrong {field['label'].lower()} '{value}'"
+
+
+# If this many fields are wrong/missing/extra, the name is following some other
+# format, so show one "wrong structure" message instead of a long list.
+STRUCTURE_LIMIT = 3
+STRUCTURE_MSG = "Wrong structure (should be program_27-type-id_goal_channel_platform_...)"
 
 
 def _align(segments):
@@ -208,89 +280,236 @@ def _align(segments):
     return list(reversed(steps))
 
 
+# =============================================================================
+# TRACKER COLUMNS  (each gets an OK / WARNING column in the output)
+# =============================================================================
+
+# Field -> tracker header. If a column isn't in your data, that field is still
+# checked inside the name, just not compared with the tracker.
+TRACKER_COLS = {
+    "initiative_id": "Initiative code*",
+    "goal":          "Goal*",
+    "channel":       "Channel*",
+    "platform":      "Platform*",
+    "funnel_stage":  "Funnel stage",
+    "tactic":        "Tactic",
+    "audience":      "Audience",
+    "duration":      "Duration",
+    "region":        "Region",
+    "country":       "Country",
+    "language":      "Language",
+    "campaign_type": "Campaign type",
+}
+NAME_CHECK_COL = "Campaign name check"
+
+# Tracker dropdown text that doesn't contain its code (keys lowercase).
+# Values like "Brand awareness (BAW)", "Paid social", "TOFU", "EMEA" work
+# without an entry here. Add any dropdown text that shows as "can't read".
+TRACKER_ALIASES = {
+    "language": {"english": "en", "german": "de", "spanish": "es",
+                 "french (canada)": "frca", "french canadian": "frca",
+                 "croatian": "hr", "italian": "it", "turkish": "tr"},
+    "country": {"united states": "us", "usa": "us", "united kingdom": "gb", "uk": "gb",
+                "germany": "de", "france": "fr", "spain": "es", "italy": "it",
+                "canada": "ca", "australia": "au", "netherlands": "nl", "ireland": "ie",
+                "india": "in", "japan": "jp", "brazil": "br", "mexico": "mx",
+                "singapore": "sg", "switzerland": "ch", "sweden": "se", "poland": "pl",
+                "turkey": "tr", "croatia": "hr"},
+    "campaign_type": {"mixed": "mix"},
+}
+
+
+def _blank(v):
+    return v is None or (isinstance(v, float) and v != v) or str(v).strip() == ""
+
+
+def _tracker_code(field, text):
+    """Tracker dropdown text -> code used in names. '' if blank, None if unreadable."""
+    if _blank(text):
+        return ""
+    t = str(text).strip()
+    low = t.lower()
+    allowed = FIELDS[field].get("_allowed_set", set())
+    m = re.search(r"\(([^()]*)\)\s*$", t)                 # "Brand awareness (BAW)"
+    if m and m.group(1).strip().lower() in allowed:
+        return m.group(1).strip().lower()
+    slug = re.sub(r"\s+", "-", low)                       # "Paid social" -> paid-social
+    if slug in allowed:
+        return slug
+    aliases = TRACKER_ALIASES.get(field, {})
+    if low in aliases:
+        return aliases[low]
+    first = re.split(r"[\s(/]", low)[0]                   # "Mixed (META vid+sta)" -> mixed
+    if first in aliases:
+        return aliases[first]
+    if field == "country" and low.startswith("all"):     # "All Countries/Multiple countries"
+        return "all"
+    return None
+
+
+ALL_FIELDS = [f["name"] for f in CONVENTION] + ["program_brand", "outcome"]
+
+
+def _all_bad(reason):
+    return {f: reason for f in ALL_FIELDS}
+
+
 def validate_name(name, source_platform=None, known_initiatives=KNOWN_INITIATIVES):
     """
-    Returns dict: is_compliant (bool), issues (list[str]), parsed ({field: value}).
+    Returns dict: is_compliant, issues (list), parsed ({field: value}),
+    bad_fields ({field: "WARNING: reason"} for fields with a problem).
     """
     if name is None or (isinstance(name, float) and name != name):  # None / NaN
         name = ""
     raw = str(name)
     name = raw.strip()
-    issues, parsed = [], {}
+    issues, parsed, bad = [], {}, {}
 
     if not name:
-        return {"is_compliant": False, "issues": ["Campaign name is empty"], "parsed": {}}
+        return {"is_compliant": False, "issues": ["Campaign name is empty"],
+                "parsed": {}, "bad_fields": _all_bad("WARNING: name is empty")}
 
     if raw != name:
-        issues.append("Has leading/trailing spaces")
+        issues.append("Spaces at start/end")
     if name != name.lower():
-        issues.append("Must be all lowercase")
+        issues.append("Not lowercase")
     if " " in name:
-        issues.append("Contains spaces (use - inside a value, _ between fields)")
+        issues.append("Has spaces")
     if len(name) > MAX_LENGTH:
-        issues.append(f"Too long ({len(name)} characters, max {MAX_LENGTH})")
+        issues.append(f"Too long ({len(name)}/{MAX_LENGTH})")
     bad_chars = sorted(set(re.sub(r"[a-z0-9_\-]", "", name.lower().replace(" ", ""))))
     if bad_chars:
-        issues.append(f"Contains characters not allowed: {' '.join(bad_chars)}")
+        issues.append(f"Bad characters: {' '.join(bad_chars)}")
 
-    segments = name.lower().split(DELIMITER)
+    lname = name.lower()
 
-    # Free text or a completely different structure: one clear message.
-    if len(segments) < 4:
-        issues.append("Doesn't follow the FY27 structure "
-                      "(brand_program_outcome_27-type-id_goal_channel_platform_...)")
-        return {"is_compliant": False, "issues": issues, "parsed": {}}
+    # The program code (e.g. avst_itm_cex_27) is taken as ONE segment, not split.
+    m = PROGRAM_END.search(lname)
+    if not m:
+        issues.append(STRUCTURE_MSG)
+        return {"is_compliant": False, "issues": issues, "parsed": {},
+                "bad_fields": _all_bad("WARNING: name not in FY27 format (no program_27)")}
 
+    program = lname[:m.end()]                      # avst_itm_cex_27
+    rest = lname[m.end() - 2:]                     # 27-evp-a05_mp1_...
+    segments = [program] + rest.split(DELIMITER)
+
+    field_issues = []
     for kind, fi, sj in _align(segments):
         if kind == "use":
             f, v = CONVENTION[fi], segments[sj]
             if v == "":
                 if f["required"]:
-                    issues.append(f"Missing {f['label']} (required)")
+                    field_issues.append(f"No {f['label'].lower()}")
+                    bad.setdefault(f["name"], "WARNING: missing (required)")
                 continue
             parsed[f["name"]] = v
             if not _value_ok(f, v):
-                issues.append(_bad_value_msg(f, v))
+                field_issues.append(_bad_value_msg(f, v))
+                bad.setdefault(f["name"], f"WARNING: '{v}' isn't a valid code")
         elif kind == "skip" and CONVENTION[fi]["required"]:
-            issues.append(f"Missing {CONVENTION[fi]['label']} (required)")
+            field_issues.append(f"No {CONVENTION[fi]['label'].lower()}")
+            bad.setdefault(CONVENTION[fi]["name"], "WARNING: missing (required)")
         elif kind == "extra":
-            issues.append(f"Unexpected segment '{segments[sj]}'")
+            field_issues.append(f"Extra '{segments[sj]}'")
 
-    # Initiative code must exist in the register.
-    parts = [parsed.get(k) for k in ("program_brand", "program", "outcome", "initiative_id")]
-    if known_initiatives is not None and all(parts):
-        code = DELIMITER.join(parts)
-        if code not in {k.lower() for k in known_initiatives}:
-            issues.append(f"Initiative code '{code.upper()}' isn't in the initiative register")
+    # Too many problems: it's a different format, so say that once and stop.
+    if len(field_issues) >= STRUCTURE_LIMIT:
+        issues.append(STRUCTURE_MSG)
+        return {"is_compliant": False, "issues": issues, "parsed": parsed,
+                "bad_fields": _all_bad("WARNING: name too far from FY27 format to read")}
+    issues += field_issues
+
+    # Brand and outcome read from a valid program code (for reporting only).
+    prog = parsed.get("program")
+    prog_ok = bool(prog) and _value_ok(FIELDS["program"], prog)
+    if prog_ok:
+        bits = prog.split(DELIMITER)
+        parsed["program_brand"], parsed["outcome"] = bits[0], bits[-2]
+
+    # Initiative code (program + initiative id) must exist in the register.
+    init = parsed.get("initiative_id")
+    if known_initiatives is not None and prog_ok and init and _value_ok(FIELDS["initiative_id"], init):
+        suffix = init[2:]                          # -evp-a05
+        code = prog + suffix                       # avst_itm_cex_27-evp-a05
+        register = {_init_key(k) for k in known_initiatives}
+        if code not in register and suffix not in register:
+            issues.append(f"Initiative '{code}' not in register")
+            bad.setdefault("initiative_id", f"WARNING: '{code}' not in initiative register")
+
+    # Only cross-check platform/channel when the codes themselves are valid
+    # (otherwise the same mistake gets reported twice).
+    plat = parsed.get("platform")
+    plat = plat if plat and _value_ok(FIELDS["platform"], plat) else None
+    chan = parsed.get("channel")
+    chan = chan if chan and _value_ok(FIELDS["channel"], chan) else None
 
     # Platform code vs where the campaign actually runs.
-    plat = parsed.get("platform")
     if source_platform and plat:
         expected = SOURCE_PLATFORM_CODES.get(str(source_platform).strip().lower())
         if expected and plat not in expected:
-            issues.append(f"Platform code '{plat}' but campaign runs on {source_platform} "
-                          f"(expected {'/'.join(sorted(expected))})")
+            issues.append(f"Platform '{plat}' but runs on {source_platform}")
+            bad.setdefault("platform", f"WARNING: '{plat}' but campaign runs on {source_platform}")
 
     # Channel makes sense for platform.
-    chan = parsed.get("channel")
     if plat and chan and plat in PLATFORM_CHANNELS and chan not in PLATFORM_CHANNELS[plat]:
         issues.append(f"Channel '{chan}' doesn't fit platform '{plat}'")
+        bad.setdefault("channel", f"WARNING: '{chan}' doesn't fit platform '{plat}'")
 
-    return {"is_compliant": not issues, "issues": issues, "parsed": parsed}
+    return {"is_compliant": not issues, "issues": issues, "parsed": parsed, "bad_fields": bad}
 
 
 def validate_dataframe(df, name_col="campaign_name", platform_col=None,
-                       known_initiatives=KNOWN_INITIATIVES):
-    """For Count / pandas: returns a copy of df with the check results added."""
+                       known_initiatives=KNOWN_INITIATIVES, tracker_cols=None):
+    """
+    For Count / pandas: returns a copy of df with the check results added.
+    tracker_cols = {field: actual column name} for the tracker columns present.
+    """
+    tracker_cols = tracker_cols or {}
     out = df.copy()
-    names = out[name_col].tolist()
     plats = out[platform_col].tolist() if platform_col else [None] * len(out)
-    results = [validate_name(n, p, known_initiatives) for n, p in zip(names, plats)]
-    out["is_compliant"] = [r["is_compliant"] for r in results]
-    out["issue_count"] = [len(r["issues"]) for r in results]
-    out["issues"] = ["; ".join(r["issues"]) for r in results]
-    for f in CONVENTION:
-        out[f"field_{f['name']}"] = [r["parsed"].get(f["name"]) for r in results]
+    rows = out.to_dict("records")
+
+    all_issues, bad_all, parsed_all = [], [], []
+    for row, p in zip(rows, plats):
+        r = validate_name(row[name_col], p, known_initiatives)
+        issues, bad, parsed = list(r["issues"]), dict(r["bad_fields"]), r["parsed"]
+
+        # Compare each tracker column with what the name says.
+        # (Platform is already compared through platform_col above.)
+        for field, col in tracker_cols.items():
+            if field == "platform" or field in bad:
+                continue
+            label = TRACKER_COLS[field].rstrip("*").strip()
+            val = row[col]
+            if field == "initiative_id":
+                tv = "" if _blank(val) else _init_key(val)
+                prog, init = parsed.get("program"), parsed.get("initiative_id")
+                nv = prog + init[2:] if prog and init else ""
+            else:
+                tv, nv = _tracker_code(field, val), parsed.get(field, "")
+            if tv is None:
+                issues.append(f"{label}: can't read tracker value '{val}'")
+                bad.setdefault(field, f"WARNING: can't read tracker value '{val}'")
+            elif tv != nv:
+                issues.append(f"{label}: tracker '{tv or 'blank'}' but name '{nv or 'blank'}'")
+                bad.setdefault(field, f"WARNING: tracker says '{tv or 'blank'}', name has '{nv or 'blank'}'")
+
+        if "program" in bad:                       # these all depend on the program code
+            for dep in ("initiative_id", "program_brand", "outcome"):
+                bad.setdefault(dep, "WARNING: program code is wrong")
+        all_issues.append(issues)
+        bad_all.append(bad)
+        parsed_all.append(parsed)
+
+    out["is_compliant"] = [not i for i in all_issues]
+    out["issue_count"] = [len(i) for i in all_issues]
+    out["issues"] = ["; ".join(i) for i in all_issues]
+    out[NAME_CHECK_COL] = ["WARNING" if i else "OK" for i in all_issues]
+    # Each field_<x> column is followed by field_<x>_check: "OK" or "WARNING: <reason>".
+    for col in ["program", "program_brand", "outcome"] + [f["name"] for f in CONVENTION[1:]]:
+        out[f"field_{col}"] = [pr.get(col) for pr in parsed_all]
+        out[f"field_{col}_check"] = [b.get(col, "OK") for b in bad_all]
     return out
 
 
@@ -300,14 +519,46 @@ def validate_dataframe(df, name_col="campaign_name", platform_col=None,
 # =============================================================================
 
 _df = cells.campaigns.copy()   # <- your SQL cell's name goes here
-# Accept the column names in any case (CAMPAIGN / campaign)
-_cols = {c.lower(): c for c in _df.columns}
-NAME_COL = _cols.get(NAME_COL.lower(), NAME_COL)
-if PLATFORM_COL:
-    PLATFORM_COL = _cols.get(PLATFORM_COL.lower(), PLATFORM_COL)
+
+
+def _norm(col):
+    return re.sub(r"[^a-z0-9]", "", str(col).lower())
+
+
+def _find_col(df, wanted, required=True):
+    """
+    Find a column by header (or the first of a list of headers), ignoring case,
+    spaces, * and punctuation. Returns None if not found and not required.
+    """
+    lookup = {_norm(c): c for c in df.columns}
+    for w in (wanted if isinstance(wanted, (list, tuple)) else [wanted]):
+        key = _norm(w)
+        if key in lookup:
+            return lookup[key]
+        # Long headers sometimes get cut short: accept a column the header starts with.
+        starts = [c for k, c in lookup.items() if len(k) >= 12 and key.startswith(k)]
+        if len(starts) == 1:
+            return starts[0]
+    if not required:
+        return None
+    raise KeyError(f"None of {wanted} found. Your columns are: {list(df.columns)} "
+                   f"- put the right header in NAME_COL at the top.")
+
+
+NAME_COL = _find_col(_df, NAME_COL)
+PLATFORM_COL = _find_col(_df, PLATFORM_COL, required=False) if PLATFORM_COL else None
 _df[NAME_COL] = _df[NAME_COL].astype("object")
 if PLATFORM_COL:
     _df[PLATFORM_COL] = _df[PLATFORM_COL].astype("object")
 
-results = validate_dataframe(_df, name_col=NAME_COL, platform_col=PLATFORM_COL)
+# Skip blank tracker rows (no campaign name at all).
+_df = _df[_df[NAME_COL].notna() & (_df[NAME_COL].astype(str).str.strip() != "")]
+
+# Tracker columns that exist in your data (missing ones are just skipped).
+_tracker = {f: _find_col(_df, h, required=False) for f, h in TRACKER_COLS.items()}
+_tracker = {f: c for f, c in _tracker.items()
+            if c is not None and (c not in (NAME_COL, PLATFORM_COL) or f == "platform")}
+
+results = validate_dataframe(_df, name_col=NAME_COL, platform_col=PLATFORM_COL,
+                             tracker_cols=_tracker)
 results
