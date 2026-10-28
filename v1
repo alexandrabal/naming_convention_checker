@@ -14,6 +14,8 @@ NAME_COL     = ["Platform campaign name / Activity code or GA4 session campaign 
                 "CAMPAIGN"]
 PLATFORM_COL = ["Platform*", "CHANNEL"]   # the ad platform (Reddit, LinkedIn...), or None
 
+ # COST_COL = ["Ad Cost*", "COST"] 
+
 import argparse
 import csv
 import os
@@ -69,6 +71,9 @@ PROGRAMS = [
     "TAG_CP_MO_27",
     "TAG_PR_ME_27",
 ]
+
+# FY26 programs: ASSUMED to be the same list ending in _26. Edit if different.
+PROGRAMS_26 = [p[:-2] + "26" for p in PROGRAMS]
 
 INITIATIVE_TYPES = ["bau", "inc", "cpg", "int", "tst", "evp", "evd"]
 
@@ -185,10 +190,25 @@ CONVENTION = [
 ]
 FIELDS = {f["name"]: f for f in CONVENTION}
 
+# FY26 names (read from your FY26 examples; ASSUMED, edit if different):
+#   program_26_activity-name_channel_platform_tactic_audience_duration_region_country_language_type
+#   e.g. avst_brd_bdm_26_hcai-report-_paid-social_li_awn_prs_aho_emea_hr_en_sta
+# No initiative id and no goal. LinkedIn was "li" in FY26.
+FY26_PLATFORMS = PAID_PLATFORMS + ["li"]
+CONVENTION_26 = [
+    {"name": "program",       "label": "Program",       "allowed": PROGRAMS_26,    "required": True},
+    {"name": "activity_name", "label": "Activity name", "pattern": r"^[a-z0-9][a-z0-9-]*$",
+                                                                                   "required": True},
+    FIELDS["channel"],
+    {"name": "platform",      "label": "Platform",      "allowed": FY26_PLATFORMS, "required": True},
+] + CONVENTION[5:]                       # funnel stage onwards, same as FY27
+
+CONVENTIONS = {"27": CONVENTION, "26": CONVENTION_26}
+
 # Which platform codes are valid for campaigns pulled from each ad platform.
 SOURCE_PLATFORM_CODES = {
     "google": {"goog", "ytub"}, "google ads": {"goog", "ytub"}, "youtube": {"ytub", "goog"},
-    "meta": {"meta"}, "facebook": {"meta"}, "linkedin": {"lkdn"}, "reddit": {"redt"},
+    "meta": {"meta"}, "facebook": {"meta"}, "linkedin": {"lkdn", "li"}, "reddit": {"redt"},
     "bing": {"bing"}, "microsoft ads": {"bing"}, "tiktok": {"tktk"},
     "twitter": {"twtr"}, "x": {"twtr"}, "quora": {"qura"},
 }
@@ -200,6 +220,7 @@ PLATFORM_CHANNELS = {
     "ytub": {"paid-video", "paid-other"},
     "meta": {"paid-social", "paid-video", "paid-other"},
     "lkdn": {"paid-social", "paid-video", "paid-other"},
+    "li":   {"paid-social", "paid-video", "paid-other"},     # FY26 LinkedIn
     "redt": {"paid-social", "paid-video", "paid-other"},
     "tktk": {"paid-social", "paid-video", "paid-other"},
     "twtr": {"paid-social", "paid-video", "paid-other"},
@@ -209,8 +230,8 @@ PLATFORM_CHANNELS = {
 DELIMITER = "_"
 MAX_LENGTH = 255
 
-# Finds the end of the program code: the first "_27" followed by - or _ or end.
-PROGRAM_END = re.compile(r"_27(?=[-_]|$)")
+# Finds the end of the program code: the first "_27" or "_26" followed by - or _ or end.
+PROGRAM_END = re.compile(r"_(2[67])(?=[-_]|$)")
 
 # =============================================================================
 # VALIDATION
@@ -222,7 +243,7 @@ def _value_ok(field, value):
     return re.match(field["pattern"], value) is not None
 
 
-for _f in CONVENTION:
+for _f in CONVENTION + CONVENTION_26:
     if "allowed" in _f:
         _f["_allowed_set"] = {str(v).lower() for v in _f["allowed"]}
 
@@ -235,16 +256,21 @@ def _bad_value_msg(field, value):
 # format, so show one "wrong structure" message instead of a long list.
 STRUCTURE_LIMIT = 3
 STRUCTURE_MSG = "Wrong structure (should be program_27-type-id_goal_channel_platform_...)"
+STRUCTURE_MSGS = {
+    "27": STRUCTURE_MSG,
+    "26": "Wrong structure (FY26 should be program_26_activity-name_channel_platform_...)",
+}
 
 
-def _align(segments):
+def _align(segments, conv=None):
     """
     Match segments to fields allowing optional fields to be left out.
     Edit-distance style: picks the reading of the name with the fewest problems,
     so a missing field is reported as missing rather than shifting every later
     field into the wrong slot.
     """
-    n, m = len(CONVENTION), len(segments)
+    conv = conv or CONVENTION
+    n, m = len(conv), len(segments)
     INF = float("inf")
     cost = [[INF] * (m + 1) for _ in range(n + 1)]
     back = [[None] * (m + 1) for _ in range(n + 1)]
@@ -255,12 +281,12 @@ def _align(segments):
             if c == INF:
                 continue
             if i < n and j < m:                          # field i uses segment j
-                f, v = CONVENTION[i], segments[j]
+                f, v = conv[i], segments[j]
                 step = 0 if (v == "" and not f["required"]) or (v and _value_ok(f, v)) else 1
                 if c + step < cost[i + 1][j + 1]:
                     cost[i + 1][j + 1], back[i + 1][j + 1] = c + step, ("use", i, j)
             if i < n:                                    # field i left out
-                step = 1 if CONVENTION[i]["required"] else 0
+                step = 1 if conv[i]["required"] else 0
                 if c + step < cost[i + 1][j]:
                     cost[i + 1][j], back[i + 1][j] = c + step, ("skip", i, None)
             if j < m:                                    # segment j doesn't belong
@@ -347,11 +373,50 @@ def _tracker_code(field, text):
     return None
 
 
-ALL_FIELDS = [f["name"] for f in CONVENTION] + ["program_brand", "outcome"]
+ALL_FIELDS = [f["name"] for f in CONVENTION] + ["activity_name", "program_brand", "outcome"]
 
 
 def _all_bad(reason):
     return {f: reason for f in ALL_FIELDS}
+
+
+def _missing_warning(f):
+    return f"WARNING: {f['label'].lower()} missing from name (required)"
+
+
+def _initiative_warning(v):
+    """Say which part of the initiative id is wrong."""
+    types = ", ".join(INITIATIVE_TYPES)
+    parts = v.split("-")
+    if parts[0] != "27":
+        return f"WARNING: initiative id '{v}' should start with 27- (e.g. 27-tst-t01-src)"
+    if len(parts) < 2 or parts[1] not in INITIATIVE_TYPES:
+        t = parts[1] if len(parts) > 1 else ""
+        return f"WARNING: initiative type '{t}' not in initiative type list ({types})"
+    rest = parts[2:]
+    if rest and re.fullmatch(r"[ta]\d{2}", rest[0]):
+        rest = rest[1:]
+    elif rest and re.fullmatch(r"[a-z]?\d+", rest[0]):
+        return f"WARNING: initiative number '{rest[0]}' should be t## or a## (e.g. t01, a05)"
+    product = "-".join(rest)
+    if product and product not in PRODUCTS:
+        return f"WARNING: product '{product}' not in product list"
+    return f"WARNING: initiative id '{v}' isn't in the format 27-type-id-product"
+
+
+def _field_warning(f, v):
+    """Warning for a value that isn't in the field's list."""
+    if f["name"] == "initiative_id":
+        return _initiative_warning(v)
+    label = f["label"].lower()
+    if f["name"] == "country":
+        return f"WARNING: '{v}' not in country list (use a 2-letter code, or all)"
+    if "allowed" not in f:                         # free-text fields, e.g. FY26 activity name
+        return f"WARNING: {label} '{v}' should start with a letter or number and only use lowercase letters, numbers and -"
+    opts = [str(o).lower() for o in f["allowed"]]
+    if len(opts) <= 20:
+        return f"WARNING: '{v}' not in {label} list ({', '.join(opts)})"
+    return f"WARNING: '{v}' not in {label} list"
 
 
 def validate_name(name, source_platform=None, known_initiatives=KNOWN_INITIATIVES):
@@ -385,51 +450,64 @@ def validate_name(name, source_platform=None, known_initiatives=KNOWN_INITIATIVE
 
     # The program code (e.g. avst_itm_cex_27) is taken as ONE segment, not split.
     m = PROGRAM_END.search(lname)
-    if not m:
-        issues.append(STRUCTURE_MSG)
-        return {"is_compliant": False, "issues": issues, "parsed": {},
-                "bad_fields": _all_bad("WARNING: name not in FY27 format (no program_27)")}
-
-    program = lname[:m.end()]                      # avst_itm_cex_27
-    rest = lname[m.end() - 2:]                     # 27-evp-a05_mp1_...
-    segments = [program] + rest.split(DELIMITER)
+    year = m.group(1) if m else "27"
+    conv = CONVENTIONS[year]
+    fields = {f["name"]: f for f in conv}
+    parsed["fy"] = "fy" + year
+    if m and year == "27":
+        program = lname[:m.end()]                  # avst_itm_cex_27
+        rest = lname[m.end() - 2:]                 # 27-evp-a05_mp1_...  (27 shared)
+        segments = [program] + rest.split(DELIMITER)
+    elif m:
+        program = lname[:m.end()]                  # avst_brd_bdm_26
+        rest = lname[m.end() + 1:]                 # hcai-report-_paid-social_li_...
+        segments = [program] + (rest.split(DELIMITER) if rest else [])
+    else:
+        # No program code at all: still read the rest so each field gets its own warning.
+        bad["program"] = "WARNING: no program code found (should start like sr_pr_caq_27 or sr_pr_caq_26)"
+        # A name with no _ at all (free text) has no fields to read.
+        segments = [""] + lname.split(DELIMITER) if DELIMITER in lname else [""]
 
     field_issues = []
-    for kind, fi, sj in _align(segments):
+    for kind, fi, sj in _align(segments, conv):
         if kind == "use":
-            f, v = CONVENTION[fi], segments[sj]
+            f, v = conv[fi], segments[sj]
             if v == "":
                 if f["required"]:
                     field_issues.append(f"No {f['label'].lower()}")
-                    bad.setdefault(f["name"], "WARNING: missing (required)")
+                    bad.setdefault(f["name"], _missing_warning(f))
                 continue
             parsed[f["name"]] = v
             if not _value_ok(f, v):
                 field_issues.append(_bad_value_msg(f, v))
-                bad.setdefault(f["name"], f"WARNING: '{v}' isn't a valid code")
-        elif kind == "skip" and CONVENTION[fi]["required"]:
-            field_issues.append(f"No {CONVENTION[fi]['label'].lower()}")
-            bad.setdefault(CONVENTION[fi]["name"], "WARNING: missing (required)")
+                bad.setdefault(f["name"], _field_warning(f, v))
+        elif kind == "skip" and conv[fi]["required"]:
+            field_issues.append(f"No {conv[fi]['label'].lower()}")
+            bad.setdefault(conv[fi]["name"], _missing_warning(conv[fi]))
         elif kind == "extra":
             field_issues.append(f"Extra '{segments[sj]}'")
 
-    # Too many problems: it's a different format, so say that once and stop.
-    if len(field_issues) >= STRUCTURE_LIMIT:
-        issues.append(STRUCTURE_MSG)
-        return {"is_compliant": False, "issues": issues, "parsed": parsed,
-                "bad_fields": _all_bad("WARNING: name too far from FY27 format to read")}
-    issues += field_issues
+    # Many problems: summarise in the issues text, but every field still keeps
+    # its own warning in its _check column.
+    if not m or len(field_issues) >= STRUCTURE_LIMIT:
+        issues.append(STRUCTURE_MSGS[year])
+        extras = [x for x in field_issues if x.startswith("Extra")]
+        if extras:
+            issues.append("; ".join(extras))
+    else:
+        issues += field_issues
 
     # Brand and outcome read from a valid program code (for reporting only).
     prog = parsed.get("program")
-    prog_ok = bool(prog) and _value_ok(FIELDS["program"], prog)
+    prog_ok = bool(prog) and _value_ok(fields["program"], prog)
     if prog_ok:
         bits = prog.split(DELIMITER)
         parsed["program_brand"], parsed["outcome"] = bits[0], bits[-2]
 
     # Initiative code (program + initiative id) must exist in the register.
     init = parsed.get("initiative_id")
-    if known_initiatives is not None and prog_ok and init and _value_ok(FIELDS["initiative_id"], init):
+    if (known_initiatives is not None and "initiative_id" in fields and prog_ok and init
+            and _value_ok(fields["initiative_id"], init)):
         suffix = init[2:]                          # -evp-a05
         code = prog + suffix                       # avst_itm_cex_27-evp-a05
         register = {_init_key(k) for k in known_initiatives}
@@ -440,9 +518,9 @@ def validate_name(name, source_platform=None, known_initiatives=KNOWN_INITIATIVE
     # Only cross-check platform/channel when the codes themselves are valid
     # (otherwise the same mistake gets reported twice).
     plat = parsed.get("platform")
-    plat = plat if plat and _value_ok(FIELDS["platform"], plat) else None
+    plat = plat if plat and _value_ok(fields["platform"], plat) else None
     chan = parsed.get("channel")
-    chan = chan if chan and _value_ok(FIELDS["channel"], chan) else None
+    chan = chan if chan and _value_ok(fields["channel"], chan) else None
 
     # Platform code vs where the campaign actually runs.
     if source_platform and plat:
@@ -474,11 +552,13 @@ def validate_dataframe(df, name_col="campaign_name", platform_col=None,
     for row, p in zip(rows, plats):
         r = validate_name(row[name_col], p, known_initiatives)
         issues, bad, parsed = list(r["issues"]), dict(r["bad_fields"]), r["parsed"]
+        year = parsed.get("fy", "fy27")[2:]
+        in_conv = {f["name"] for f in CONVENTIONS[year]} | {"program_brand", "outcome"}
 
         # Compare each tracker column with what the name says.
         # (Platform is already compared through platform_col above.)
         for field, col in tracker_cols.items():
-            if field == "platform" or field in bad:
+            if field == "platform" or field in bad or field not in in_conv:
                 continue
             label = TRACKER_COLS[field].rstrip("*").strip()
             val = row[col]
@@ -496,8 +576,11 @@ def validate_dataframe(df, name_col="campaign_name", platform_col=None,
                 bad.setdefault(field, f"WARNING: tracker says '{tv or 'blank'}', name has '{nv or 'blank'}'")
 
         if "program" in bad:                       # these all depend on the program code
-            for dep in ("initiative_id", "program_brand", "outcome"):
-                bad.setdefault(dep, "WARNING: program code is wrong")
+            for dep in ("program_brand", "outcome"):
+                bad.setdefault(dep, "WARNING: can't read, program code is wrong")
+        for field in ALL_FIELDS:                   # e.g. goal doesn't exist in FY26 names
+            if field not in in_conv:
+                bad[field] = f"N/A (not in FY{year} names)"
         all_issues.append(issues)
         bad_all.append(bad)
         parsed_all.append(parsed)
@@ -507,9 +590,18 @@ def validate_dataframe(df, name_col="campaign_name", platform_col=None,
     out["issues"] = ["; ".join(i) for i in all_issues]
     out[NAME_CHECK_COL] = ["WARNING" if i else "OK" for i in all_issues]
     # Each field_<x> column is followed by field_<x>_check: "OK" or "WARNING: <reason>".
-    for col in ["program", "program_brand", "outcome"] + [f["name"] for f in CONVENTION[1:]]:
+    out["field_fy"] = [pr.get("fy") for pr in parsed_all]
+    for col in ["program", "program_brand", "outcome", "activity_name"] + [f["name"] for f in CONVENTION[1:]]:
         out[f"field_{col}"] = [pr.get(col) for pr in parsed_all]
         out[f"field_{col}_check"] = [b.get(col, "OK") for b in bad_all]
+
+    # campaign_status: OK only if the name check and every field check are OK
+    # (N/A counts as OK). Anything else -> WARNING.
+    check_cols = [NAME_CHECK_COL] + [c for c in out.columns if c.startswith("field_") and c.endswith("_check")]
+    out["campaign_status"] = [
+        "OK" if all(v == "OK" or str(v).startswith("N/A") for v in row) else "WARNING"
+        for row in out[check_cols].itertuples(index=False)
+    ]
     return out
 
 
